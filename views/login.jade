@@ -1,0 +1,10 @@
+extends layout
+
+block content
+ form(action="/login", method="post")
+   input(type="hidden", name="username", value="plover")
+   input(type="hidden", name="password", value="xyzzy")
+   input(type="submit", value="Login")
+
+ form(action="auth/oauth2", method="get")
+   input(type="submit", value="Login Using Oauth2(Google)")
