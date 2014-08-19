@@ -6,5 +6,8 @@ block content
    input(type="hidden", name="password", value="xyzzy")
    input(type="submit", value="Login")
 
- form(action="auth/oauth2", method="get")
+ form(action="auth/google_oauth2", method="get")
    input(type="submit", value="Login Using Oauth2(Google)")
+
+ form(action="auth/google_api", method="get")
+   input(type="submit", value="Login Using Google APIs")

@@ -15,6 +15,10 @@ public/test/lib/sinon.js
 public/test/lib/sinon-chai.js
 reports
 
+certs/*
+crypto/*
+tokens.json
+
 *~
 lib-cov
 lcov.info

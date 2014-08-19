@@ -4,18 +4,24 @@
  */
 
 var express = require('express');
-var routes = require('./routes');
-var user = require('./routes/user');
+var flash = require('connect-flash');
+var fs = require('fs');
 var http = require('http');
 var https = require('https');
 var path = require('path');
+var util = require('util');
+
 var passport = require('passport');
 var RememberMeStrategy = require('passport-remember-me').Strategy;
 var LocalStrategy = require('passport-local').Strategy;
 var OAuth2Strategy = require('passport-oauth2').Strategy;
-var util = require('util');
-var fs = require('fs');
-var flash = require('connect-flash');
+var SAMLStrategy = require('passport-saml').Strategy;
+
+var google = require('googleapis');
+var GoogleOAuth2 = google.auth.OAuth2;
+
+var routes = require('./routes');
+var user = require('./routes/user');
 
 var token_file = 'tokens.json';
 
@@ -82,17 +88,37 @@ passport.use('remember-me', new RememberMeStrategy(
   }
 ));
 
-passport.use('oauth2', new OAuth2Strategy({
-    authorizationURL: 'https://accounts.google.com/o/oauth2/auth',
-    tokenURL: 'https://accounts.google.com/o/oauth2/token',
-    clientID: '922391096653-1slbbcf5ujrrfn5oeap0a0acvmr626l7.apps.googleusercontent.com',
-    clientSecret: 'e5Lfe_nTegO37xPjqLjaYXiD',
-    callbackURL: "https://localhost:4000/oauth2callback",
-    scope: "openid",
-    state: "xyzzy"
+var google_info = {
+  api_key: 'AIzaSyAJfr0-IXoEqpNSlUhpg6kqbTenUAIckHo',
+  authorization_url: 'https://accounts.google.com/o/oauth2/auth',
+  token_url: 'https://accounts.google.com/o/oauth2/token',
+  client_id: '922391096653-1slbbcf5ujrrfn5oeap0a0acvmr626l7.apps.googleusercontent.com',
+  client_secret: 'e5Lfe_nTegO37xPjqLjaYXiD',
+  scope: [
+    'openid',
+    'https://www.googleapis.com/auth/plus.login',
+    'https://www.googleapis.com/auth/plus.me',
+    'https://www.googleapis.com/auth/calendar'
+  ]
+};
+
+var oauth2_client = new GoogleOAuth2(
+  google_info.client_id,
+  google_info.client_secret,
+  'https://localhost:4000/auth/result/google_api'
+);
+google.options({auth: oauth2_client});
+
+passport.use('google_oauth2', new OAuth2Strategy({
+    authorizationURL: google_info.authorization_url,
+    tokenURL: google_info.token_url,
+    clientID: google_info.client_id,
+    clientSecret: google_info.client_secret,
+    callbackURL: "https://localhost:4000/auth/result/google_oauth2",
+    scope: google_info.scope.join(' '),
   },
   function(accessToken, refreshToken, profile, done) {
-    return done(null, 1);
+    return done(null, 1, { access_token: accessToken });
   }
 ));
 
@@ -146,33 +172,65 @@ app.post('/login',
   }
 );
 
-app.get('/auth/oauth2', 
-        passport.authenticate('oauth2', { failureRedirect: '/login' }),
-        function(req, res) {
-          console.log('/auth/oauth2');
-          console.log(req.query);
-          console.log(req.params);
-          console.log(req.body);
-          res.redirect('/');
-        }
+app.get('/auth/google_oauth2', 
+        passport.authenticate('google_oauth2', { failureRedirect: '/login' }),
+        function(req, res) { res.redirect('/'); }
 );
 
-app.get('/oauth2callback',
+app.get('/auth/result/google_oauth2',
         passport.authenticate('oauth2', { failureRedirect: '/login' }),
-        function(req, res) {
-          console.log('oauth2 return');
-          console.log(req.query);
-          console.log(req.params);
-          console.log(req.body);
-          res.redirect('/');
-        }
+        function(req, res) { res.redirect('/'); }
 );
 
-/*
-http.createServer(app).listen(app.get('port'), function(){
-  console.log('Express server listening on port ' + app.get('port'));
+app.get('/auth/google_api', function(req, res) {
+  var url = oauth2_client.generateAuthUrl({
+    access_type: 'offline', // 'online' (default) or 'offline' (gets refresh_token)
+    scope: google_info.scope // If you only need one scope you can pass it as string
+  });
+  res.redirect(url);
 });
-*/
+
+app.get('/auth/result/google_api', function(req, res, next) {
+  var auth_code = req.query.code;
+  oauth2_client.getToken(auth_code, function(err, tokens) {
+    if (err) {
+      res.send(500, util.inspect(err));
+    } else {
+      oauth2_client.setCredentials(tokens);
+      saveToken(1, function(token) {
+        console.log(util.format('Login: Saving token \'%s\'', token));
+        res.cookie('remember_me', token, { path: '/', httpOnly: true, maxAge: 120000 });
+        return next();
+      })
+    }
+  });
+}, function(req, res) {
+  var plus = google.plus('v1');
+  var calendar = google.calendar({ version: 'v3' });
+  var user_id = 'me';
+  plus.people.get({ userId: user_id}, function(err, response) {
+    if (err) {
+      console.log(err);
+    } else {
+      console.log(response);
+    }
+  });
+  calendar.calendarList.list({ userId: user_id}, function(err, response) {
+    if (err) {
+      console.log(err);
+    } else {
+      console.log(response);
+    }
+  });
+  calendar.calendars.get({ userId: user_id, calendarId: 'aikimcr@gmail.com' }, function(err, response) {
+    if (err) {
+      console.log(err);
+    } else {
+      console.log(response);
+    }
+  });
+  res.redirect('/');
+});
 
 var https_options = {
   key: fs.readFileSync('crypto/rsa_private.pem'),
