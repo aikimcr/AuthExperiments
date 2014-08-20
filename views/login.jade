@@ -2,8 +2,8 @@ extends layout
 
 block content
  form(action="/login", method="post")
-   input(type="hidden", name="username", value="plover")
-   input(type="hidden", name="password", value="xyzzy")
+   input(type="text", name="username")
+   input(type="password", name="password")
    input(type="submit", value="Login")
 
  form(action="auth/google_oauth2", method="get")

@@ -18,6 +18,7 @@ reports
 certs/*
 crypto/*
 tokens.json
+users.json
 
 *~
 lib-cov

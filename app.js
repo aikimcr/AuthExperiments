@@ -23,70 +23,108 @@ var GoogleOAuth2 = google.auth.OAuth2;
 var routes = require('./routes');
 var user = require('./routes/user');
 
-var token_file = 'tokens.json';
+var DBFile = function() {
+  this.db_ = {};
 
-function getTokens() {
-  var tokens = {};
+  this.load = function() {
+    if (fs.existsSync(this.db_file_)) {
+      var db_txt = fs.readFileSync(this.db_file_, {encoding: 'utf8'});
+      this.db_ = db_txt ? JSON.parse(db_txt) : {};
+    }
+  };
 
-  if (fs.existsSync(token_file)) {
-    var tokens_txt = fs.readFileSync(token_file, {encoding: 'utf8'});
-    tokens = tokens_txt ? JSON.parse(tokens_txt) : {};
-  }
+  this.save = function() {
+    var db_txt = JSON.stringify(this.db_);
+    fs.writeFileSync(this.db_file_, db_txt, {encoding: 'utf8'});
+  };
 
-  return tokens;
-}
+  this.getValue = function(key) {
+    this.load();
+    return this.db_[key];
+  };
 
-function saveTokens(tokens) {
-  var tokens_txt = JSON.stringify(tokens);
-  fs.writeFileSync(token_file, tokens_txt, {encoding: 'utf8'});
-}
+  this.putValue = function(key, value) {
+    this.load();
+    this.db_[key] = value;
+    this.save();
+  };
 
-function saveToken(uid, callback) {
-  token = parseInt(Math.random() * parseInt('FFFFFFFF', 16), 10).toString(16).toUpperCase();
+  this.deleteValue = function(key) {
+    this.load();
+    var result = this.db_[key];
+    delete this.db_[key];
+    this.save();
+    return result;
+  };
 
-  var tokens = getTokens();
-  tokens[token] = uid;
-  saveTokens(tokens);
-  return callback(token);
-}
+  this.find = function(match) {
+    this.load();
+    return this.db_.filter(match);
+  };
+};
 
-function consumeToken(token, callback) {
-  var tokens = getTokens();
-  var uid = tokens[token];
-  delete tokens[token];
-  saveTokens(tokens);
-  if (uid != null) {
-    callback(uid);
-  } else {
-    console.log(util.format('No matching token: \'%s\'', token));
-    callback(null);
-  }
-}
+var TokenList = function() {
+  this.db_file_ = 'tokens.json';
+  DBFile.apply(this, arguments);
 
-passport.use('local', new LocalStrategy(
-  function(username, password, done) {
-    return done(null, 1);
-  }
-));
+  this.new_token_ = function() {
+    return parseInt(Math.random() * parseInt('FFFFFFFF', 16), 10).toString(16).toUpperCase(); 
+  };
 
-passport.use('remember-me', new RememberMeStrategy(
-  function(token, done) {
-    consumeToken(token, function(uid) {
-      console.log(util.format('Consume token \'%s\'', token));
-      if (uid == null) {
-        done(null, false);
-      } else {
-        done(null, uid);
-      }
+  this.saveSession = function(uid, callback) {
+    token = this.new_token_();
+    this.putValue(token, uid);
+    return callback(null, token);
+  };
+
+  this.consumeSession = function(token, callback) {
+    var uid = this.deleteValue(token);
+
+    if (uid != null) {
+      callback(null, uid);
+    } else {
+      var msg = util.format('No matching token: \'%s\'', token);
+      console.log(msg);
+      callback(new Error(msg));
+    }
+  };
+};
+util.inherits(TokenList, DBFile);
+var token_list = new TokenList();
+
+var UserList = function() {
+  this.db_file_ = 'users.json';
+  DBFile.apply(this, arguments);
+
+  this.createUser = function(user_info) {
+    this.putValue(user_info.id, user_info);
+  };
+
+  this.updateUser = function(update_info) {
+    var key = update_info.id;
+    var old_value = this.getValue(key) || {};
+    Object.keys(update_info).forEach(function(key) {
+      old_value[key] = update_info[key];
     });
-  },
-  function(user, done) {
-    saveToken(user, function(token) {
-      console.log(util.format('Strategy: Saving token \'%s\'', token));
-      return done(null, token);
+    this.putValue(key, old_value);
+  };
+
+  this.findByUsername = function(username, callback) {
+    var result_list = this.find(function(user_info) {
+      return ('username' in user_info && user_info.username == username);
     });
-  }
-));
+    if (result_list) {
+      callback(null, result_list[0]);
+    } else {
+      callback(new Error("No user found"));
+    }
+  };
+};
+util.inherits(UserList, DBFile);
+var user_list = new UserList();
+
+user_list.createUser({id: 1, username: 'root', password: 'xyzzy'});
+user_list.createUser({id: 2, username: 'branch', password: 'leaf'});
 
 var google_info = {
   api_key: 'AIzaSyAJfr0-IXoEqpNSlUhpg6kqbTenUAIckHo',
@@ -109,6 +147,47 @@ var oauth2_client = new GoogleOAuth2(
 );
 google.options({auth: oauth2_client});
 
+passport.use('local', new LocalStrategy(
+  function(username, password, done) {
+    user_list.findByUsername(username, function(err, user) {
+      if (err) {
+        return done(null, false, { message: 'No user found' });
+      } else if ('password' in user && user.password == password) {
+        return done(null, false, { messagae: 'Login incorrect' });
+      } else {
+        return done(null, user.id)
+      }
+    });
+  }
+));
+
+passport.use('remember-me', new RememberMeStrategy(
+  function(token, done) {
+    token_list.consumeSession(token, function(err, uid) {
+      console.log(util.format('Consume token \'%s\'', token));
+      if (err) {
+        console.log(err);
+        done(null, false, { msg: err.toString() });
+      } else {
+        var user = user_list.getValue(uid);
+        oauth2_client.setCredentials(user.google_auth);
+        done(null, uid);
+      }
+    });
+  },
+  function(user, done) {
+    token_list.saveSession(user, function(err, token) {
+      if (err) {
+        console.log(err);
+        done(null, false, { msg: err.toString() });
+      } else {
+        console.log(util.format('Strategy: Saving token \'%s\'', token));
+        return done(null, token);
+      }
+    });
+  }
+));
+
 passport.use('google_oauth2', new OAuth2Strategy({
     authorizationURL: google_info.authorization_url,
     tokenURL: google_info.token_url,
@@ -118,7 +197,7 @@ passport.use('google_oauth2', new OAuth2Strategy({
     scope: google_info.scope.join(' '),
   },
   function(accessToken, refreshToken, profile, done) {
-    return done(null, 1, { access_token: accessToken });
+   return done(null, -1, { access_token: accessToken });
   }
 ));
 
@@ -149,6 +228,18 @@ app.use(passport.authenticate('remember-me'));
 app.use(app.router);
 app.use(express.static(path.join(__dirname, 'public')));
 
+function saveSession(res, next, user) {
+  token_list.saveSession(user, function(err, token) {
+    if (err) {
+      return res.send(500, err);
+    } else {
+      console.log(util.format('Login: Saving token \'%s\'', token));
+      res.cookie('remember_me', token, { path: '/', httpOnly: true, maxAge: 120000 });
+      return next();
+    }
+  });
+}
+
 // development only
 if ('development' == app.get('env')) {
   app.use(express.errorHandler());
@@ -161,11 +252,7 @@ app.get('/login', routes.login);
 app.post('/login',
   passport.authenticate('local', { failureRedirect: '/login', failureFlash: true }),
   function(req, res, next) {
-    saveToken(1, function(token) {
-      console.log(util.format('Login: Saving token \'%s\'', token));
-      res.cookie('remember_me', token, { path: '/', httpOnly: true, maxAge: 120000 });
-      return next();
-    })
+    saveSession(res, next, req.session.passport.user);
   },
   function(req, res) {
     res.redirect('/');
@@ -197,24 +284,25 @@ app.get('/auth/result/google_api', function(req, res, next) {
       res.send(500, util.inspect(err));
     } else {
       oauth2_client.setCredentials(tokens);
-      saveToken(1, function(token) {
-        console.log(util.format('Login: Saving token \'%s\'', token));
-        res.cookie('remember_me', token, { path: '/', httpOnly: true, maxAge: 120000 });
-        return next();
-      })
+      google.plus('v1').people.get({ userId: 'me' }, function(err, response) {
+        if (err) {
+          console.log(err);
+          res.send(500, err);
+        } else {
+          console.log(response);
+          user_list.createUser({
+            id: response.id,
+            google_auth: tokens,
+          });
+          saveSession(res, next, response.id);
+        }
+      });
     }
   });
 }, function(req, res) {
-  var plus = google.plus('v1');
+/*
   var calendar = google.calendar({ version: 'v3' });
   var user_id = 'me';
-  plus.people.get({ userId: user_id}, function(err, response) {
-    if (err) {
-      console.log(err);
-    } else {
-      console.log(response);
-    }
-  });
   calendar.calendarList.list({ userId: user_id}, function(err, response) {
     if (err) {
       console.log(err);
@@ -229,6 +317,7 @@ app.get('/auth/result/google_api', function(req, res, next) {
       console.log(response);
     }
   });
+*/
   res.redirect('/');
 });
 
